@@ -3,6 +3,7 @@ import SwiftUI
 public struct BookGridView: View {
     let books: [Book]
     @Binding var columnVisibility: NavigationSplitViewVisibility
+    @Environment(\.openWindow) private var openWindow
     
     public init(books: [Book], columnVisibility: Binding<NavigationSplitViewVisibility>) {
         self.books = books
@@ -13,7 +14,9 @@ public struct BookGridView: View {
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 150))]) {
                 ForEach(books) { book in
-                    NavigationLink(destination: ReaderView(book: book, columnVisibility: $columnVisibility)) {
+                    Button {
+                        openWindow(value: BookWindowRequest(bookID: book.id))
+                    } label: {
                         BookCard(book: book)
                     }
                     .buttonStyle(.plain)

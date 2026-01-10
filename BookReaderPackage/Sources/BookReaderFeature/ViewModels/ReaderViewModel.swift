@@ -51,9 +51,28 @@ public class ReaderViewModel: ObservableObject {
     @Published public var showChapterList: Bool = true  // Open by default
     @Published public var showNotes: Bool = false
     
+    // Text selection for notes
+    @Published public var selectedText: String = ""
+    
+    // Pending navigation (for jump-to-location from notes)
+    private var pendingChapterIndex: Int?
+    private var pendingPageIndex: Int?
+    
+    // Reader tab selection (0 = Book, 1 = Notes)
+    @Published public var selectedReaderTab: Int = 0
+    
+    // Notes list sheet (for viewing all notes in a separate sheet)
+    @Published public var showNotesListSheet: Bool = false
+    
     public init(book: Book) {
         self.book = book
         // Load is deferred to onAppear/task
+    }
+    
+    // Set pending navigation to be applied after book loads
+    public func setPendingNavigation(chapterIndex: Int?, pageIndex: Int?) {
+        self.pendingChapterIndex = chapterIndex
+        self.pendingPageIndex = pageIndex
     }
     
     public func loadBook() async {
@@ -130,10 +149,22 @@ public class ReaderViewModel: ObservableObject {
             
         } catch {
             print("Error loading book: \(error)")
-            errorMessage = "Error loading book: \(error.localizedDescription)"
+            errorMessage = "Failed to load book: \(error.localizedDescription)"
         }
         
         isLoading = false
+        
+        // Apply pending navigation if set (after book loads)
+        if let chapterIndex = pendingChapterIndex {
+            currentChapterIndex = chapterIndex
+            pendingChapterIndex = nil
+            print("DEBUG: Applied pending chapter navigation to \(chapterIndex)")
+        }
+        if let pageIndex = pendingPageIndex {
+            currentSubPage = pageIndex
+            pendingPageIndex = nil
+            print("DEBUG: Applied pending page navigation to \(pageIndex)")
+        }
     }
     
     private func findContentBaseURL(in root: URL) throws -> URL? {
@@ -319,5 +350,11 @@ public class ReaderViewModel: ObservableObject {
     
     public func resetTimeTracking() {
         timeOnCurrentPage = 0
+    }
+    
+    // MARK: - Text Selection Management
+    
+    public func clearSelection() {
+        selectedText = ""
     }
 }

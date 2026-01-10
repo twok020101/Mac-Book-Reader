@@ -16,10 +16,18 @@ public struct ReaderView: View {
     @State private var arrowKeyMonitor: Any?
     #endif
     
-    public init(book: Book, columnVisibility: Binding<NavigationSplitViewVisibility>) {
+    
+    public init(book: Book, columnVisibility: Binding<NavigationSplitViewVisibility>, initialChapterIndex: Int? = nil, initialPageIndex: Int? = nil) {
         self.book = book
         self._columnVisibility = columnVisibility
-        self._viewModel = StateObject(wrappedValue: ReaderViewModel(book: book))
+        let viewModel = ReaderViewModel(book: book)
+        
+        // Set pending navigation to be applied after book loads
+        if initialChapterIndex != nil || initialPageIndex != nil {
+            viewModel.setPendingNavigation(chapterIndex: initialChapterIndex, pageIndex: initialPageIndex)
+        }
+        
+        self._viewModel = StateObject(wrappedValue: viewModel)
     }
     
     #if os(macOS)
@@ -87,7 +95,26 @@ public struct ReaderView: View {
     }
     #endif
     
+    
     public var body: some View {
+        readerContent
+            .sheet(isPresented: $showFocusModeWelcome) {
+                FocusModeWelcomeView(isPresented: $showFocusModeWelcome) {
+                    enterFocusMode()
+                }
+            }
+            .sheet(isPresented: $showAIChat) {
+                AIChatPanel(viewModel: viewModel)
+            }
+            .sheet(isPresented: $viewModel.showNotesListSheet) {
+                NavigationStack {
+                    BookNotesView(book: book, viewModel: viewModel)
+                }
+                .frame(minWidth: 500, minHeight: 600)
+            }
+    }
+    
+    private var readerContent: some View {
         HStack(spacing: 0) {
             // Chapter List Sidebar (hidden in focus mode)
             if viewModel.showChapterList && !isInFocusMode {
@@ -165,13 +192,23 @@ public struct ReaderView: View {
                     .transition(.move(edge: .trailing))
             }
         }
-        .sheet(isPresented: $showAIChat) {
-            AIChatPanel(viewModel: viewModel)
+        .task {
+            await viewModel.loadBook()
+            viewModel.startTrackingTime()
+            
+            #if os(macOS)
+            setupArrowKeyMonitor()
+            #endif
         }
-        .sheet(isPresented: $showFocusModeWelcome) {
-            FocusModeWelcomeView(isPresented: $showFocusModeWelcome) {
-                enterFocusMode()
+        .onDisappear {
+            viewModel.stopTrackingTime()
+            
+            #if os(macOS)
+            if let monitor = arrowKeyMonitor {
+                NSEvent.removeMonitor(monitor)
+                arrowKeyMonitor = nil
             }
+            #endif
         }
         .toolbar {
             // Hide all toolbar items in focus mode
@@ -191,41 +228,28 @@ public struct ReaderView: View {
                 ToolbarItemGroup(placement: .primaryAction) {
                     Button(action: { showAIChat.toggle() }) {
                         Label("AI Chat", systemImage: "sparkles")
-                }
-                .help("Chat with AI about this book (Cmd+I)")
+                    }
+                    .help("Chat with AI about this book (Cmd+I)")
                     
                     Button(action: { 
-                        withAnimation { viewModel.showNotes.toggle() } 
+                        withAnimation { viewModel.showNotes.toggle() }
                         if viewModel.showNotes { viewModel.showChapterList = false }
                     }) {
                         Label("Notes", systemImage: "square.and.pencil")
-                }
-                .help("Toggle Notes (Cmd+N)")
+                    }
+                    .help("Toggle Notes (Cmd+N)")
+                    
+                    Button(action: { viewModel.showNotesListSheet = true }) {
+                        Label("Notes List", systemImage: "list.bullet.rectangle")
+                    }
+                    .help("View all notes for this book")
                     
                     Button(action: { showFocusModeWelcome = true }) {
                         Label("Focus Mode", systemImage: "moon.stars.fill")
+                    }
+                    .help("Enter Focus Mode (Cmd+Shift+F)")
                 }
-                .help("Enter Focus Mode (Cmd+Shift+F)")
             }
-        }
-        }
-        .task {
-            await viewModel.loadBook()
-            viewModel.startTrackingTime()
-            
-            #if os(macOS)
-            setupArrowKeyMonitor()
-            #endif
-        }
-        .onDisappear {
-            viewModel.stopTrackingTime()
-            
-            #if os(macOS)
-            if let monitor = arrowKeyMonitor {
-                NSEvent.removeMonitor(monitor)
-                arrowKeyMonitor = nil
-            }
-            #endif
         }
     }
     

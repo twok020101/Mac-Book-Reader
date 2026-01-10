@@ -7,6 +7,7 @@ public struct LibraryView: View {
     
     @StateObject private var viewModel = LibraryViewModel()
     @State private var columnVisibility = NavigationSplitViewVisibility.all
+    @State private var selectedTab = 0
     
     public init() {}
     
@@ -19,19 +20,35 @@ public struct LibraryView: View {
     }
     
     public var body: some View {
-        NavigationStack {
-            BookGridView(books: filteredBooks, columnVisibility: $columnVisibility)
-                .searchable(text: $viewModel.searchText)
-                .toolbar {
-                    Button(action: { viewModel.isImporting = true }) {
-                        Label("Import", systemImage: "plus")
+        TabView(selection: $selectedTab) {
+            // Books Tab
+            NavigationStack {
+                BookGridView(books: filteredBooks, columnVisibility: $columnVisibility)
+                    .searchable(text: $viewModel.searchText, prompt: "Search books...")
+                    .toolbar {
+                        Button(action: { viewModel.isImporting = true }) {
+                            Label("Import", systemImage: "plus")
+                        }
                     }
-                }
-                .sheet(isPresented: $viewModel.isImporting) {
-                    ImportBookView(isPresented: $viewModel.isImporting) { urls in
-                        viewModel.importBooks(urls: urls, context: modelContext)
+                    .sheet(isPresented: $viewModel.isImporting) {
+                        ImportBookView(isPresented: $viewModel.isImporting) { urls in
+                            viewModel.importBooks(urls: urls, context: modelContext)
+                        }
                     }
-                }
+            }
+            .tabItem {
+                Label("Books", systemImage: "books.vertical")
+            }
+            .tag(0)
+            
+            // Notes Tab
+            NavigationStack {
+                NotesView()
+            }
+            .tabItem {
+                Label("Notes", systemImage: "note.text")
+            }
+            .tag(1)
         }
     }
 }

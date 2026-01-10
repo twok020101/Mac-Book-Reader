@@ -42,6 +42,7 @@ struct EPUBWebView: NSViewRepresentable {
         let config = WKWebViewConfiguration()
         let contentController = WKUserContentController()
         contentController.add(context.coordinator, name: "pagination")
+        contentController.add(context.coordinator, name: "textSelection")
         config.userContentController = contentController
         
         let webView = WKWebView(frame: .zero, configuration: config)
@@ -115,16 +116,20 @@ struct EPUBWebView: NSViewRepresentable {
         // MARK: - WKScriptMessageHandler
         
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard message.name == "pagination",
-                  let dict = message.body as? [String: Any] else { return }
-            
-            print("DEBUG: Received pagination message: \(dict)")
-            
-            if let totalPages = dict["totalPages"] as? Int {
-                DispatchQueue.main.async {
-                    if self.parent.viewModel.totalSubPages != totalPages {
-                        print("DEBUG: Setting totalSubPages to \(totalPages)")
+            if message.name == "pagination" {
+                if let dict = message.body as? [String: Any],
+                   let totalPages = dict["totalPages"] as? Int {
+                    DispatchQueue.main.async {
                         self.parent.viewModel.totalSubPages = totalPages
+                        print("DEBUG: Updated totalSubPages to \(totalPages)")
+                    }
+                }
+            } else if message.name == "textSelection" {
+                if let dict = message.body as? [String: Any],
+                   let text = dict["text"] as? String {
+                    DispatchQueue.main.async {
+                        self.parent.viewModel.selectedText = text
+                        print("DEBUG: Selected text: '\(text.prefix(50))...'")
                     }
                 }
             }
@@ -252,6 +257,18 @@ struct EPUBWebView: NSViewRepresentable {
                             'totalPages': totalPages
                         });
                     }, 200);
+                });
+                
+                // Text selection detection
+                document.addEventListener('mouseup', function() {
+                    setTimeout(function() {
+                        var selectedText = window.getSelection().toString().trim();
+                        if (selectedText && selectedText.length > 0) {
+                            window.webkit.messageHandlers.textSelection.postMessage({
+                                'text': selectedText
+                            });
+                        }
+                    }, 10);
                 });
                 
                 return { status: 'injected', viewWidth: viewWidth };
