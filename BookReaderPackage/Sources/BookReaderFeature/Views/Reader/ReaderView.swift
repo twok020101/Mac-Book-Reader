@@ -17,10 +17,10 @@ public struct ReaderView: View {
     #endif
     
     
-    public init(book: Book, columnVisibility: Binding<NavigationSplitViewVisibility>, initialChapterIndex: Int? = nil, initialPageIndex: Int? = nil) {
+    public init(book: Book, columnVisibility: Binding<NavigationSplitViewVisibility>, modelContext: ModelContext? = nil, initialChapterIndex: Int? = nil, initialPageIndex: Int? = nil) {
         self.book = book
         self._columnVisibility = columnVisibility
-        let viewModel = ReaderViewModel(book: book)
+        let viewModel = ReaderViewModel(book: book, modelContext: modelContext)
         
         // Set pending navigation to be applied after book loads
         if initialChapterIndex != nil || initialPageIndex != nil {

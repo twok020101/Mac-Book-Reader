@@ -1,5 +1,6 @@
 import Foundation
 import EPUBKit
+import SwiftData
 
 @MainActor
 public class ReaderViewModel: ObservableObject {
@@ -7,20 +8,54 @@ public class ReaderViewModel: ObservableObject {
     @Published public var currentChapterURL: URL?
     @Published public var totalSubPages: Int = 1 {
         didSet {
-            print("DEBUG: totalSubPages changed from \(oldValue) to \(totalSubPages)")
+            //print("DEBUG: totalSubPages changed from \(oldValue) to \(totalSubPages)")
+            // Track actual page count (replaces estimate from pre-calculation)
+            let oldEstimate = chapterPageCounts[currentChapterIndex] ?? 0
+            chapterPageCounts[currentChapterIndex] = totalSubPages
+            //print("DEBUG: Chapter \(currentChapterIndex): \(oldEstimate) est → \(totalSubPages) actual, total absolute: \(totalAbsolutePages)")
         }
     }
-    @Published public var currentSubPage: Int = 0
+    @Published public var currentSubPage: Int = 0 {
+        didSet {
+            //print("DEBUG: currentSubPage changed from \(oldValue) to \(currentSubPage)")
+            if oldValue != currentSubPage {
+                saveProgress()
+            }
+        }
+    }
     @Published public var pendingScrollToFragment: String?
     
     @Published public var currentChapterIndex: Int = 0 {
         didSet {
             if oldValue != currentChapterIndex {
                 updateChapterURL()
+                saveProgress()
             }
         }
     }
     @Published public var epubDocument: EPUBDocument?
+    
+    // MARK: - Absolute Page Tracking
+    
+    // Track page count for each chapter as they load
+    private var chapterPageCounts: [Int: Int] = [:]  // [chapterIndex: pageCount]
+    
+    // Computed: absolute page number (1-indexed for user display)
+    public var absolutePageNumber: Int {
+        var absolute = 0
+        // Sum pages from all previous chapters
+        for i in 0..<currentChapterIndex {
+            absolute += chapterPageCounts[i] ?? 0
+        }
+        // Add current page within chapter
+        absolute += currentSubPage + 1  // +1 for 1-indexing
+        return absolute
+    }
+    
+    // Computed: total pages across entire book
+    public var totalAbsolutePages: Int {
+        return chapterPageCounts.values.reduce(0, +)
+    }
     
     // Cached for chapter navigation
     private var contentBaseURL: URL?
@@ -55,8 +90,8 @@ public class ReaderViewModel: ObservableObject {
     @Published public var selectedText: String = ""
     
     // Pending navigation (for jump-to-location from notes)
-    private var pendingChapterIndex: Int?
-    private var pendingPageIndex: Int?
+    public var pendingChapterIndex: Int?
+    public var pendingPageIndex: Int?
     
     // Reader tab selection (0 = Book, 1 = Notes)
     @Published public var selectedReaderTab: Int = 0
@@ -64,8 +99,12 @@ public class ReaderViewModel: ObservableObject {
     // Notes list sheet (for viewing all notes in a separate sheet)
     @Published public var showNotesListSheet: Bool = false
     
-    public init(book: Book) {
+    // SwiftData context for saving progress
+    private let modelContext: ModelContext?
+    
+    public init(book: Book, modelContext: ModelContext? = nil) {
         self.book = book
+        self.modelContext = modelContext
         // Load is deferred to onAppear/task
     }
     
@@ -93,7 +132,7 @@ public class ReaderViewModel: ObservableObject {
             }
             fileURL = docsURL.appendingPathComponent(book.filePath)
             // Log for debugging
-            print("Resolved relative path '\(book.filePath)' to: \(fileURL.path)")
+            //print("Resolved relative path '\(book.filePath)' to: \(fileURL.path)")
         }
         
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
@@ -128,43 +167,120 @@ public class ReaderViewModel: ObservableObject {
             // 5. Set Initial Chapter
             // Find and cache content base URL (directory containing .opf)
             self.contentBaseURL = try findContentBaseURL(in: bookDir) ?? bookDir
-            print("Content Base URL: \(self.contentBaseURL?.path ?? "nil")")
+            //print("Content Base URL: \(self.contentBaseURL?.path ?? "nil")")
             
             if let firstSpineItem = document.spine.items.first {
-                print("First Spine Item IDRef: \(firstSpineItem.idref)")
+                //print("First Spine Item IDRef: \(firstSpineItem.idref)")
                 if let resource = document.manifest.items[firstSpineItem.idref] {
-                    print("Resource found in manifest: \(resource.path)")
+                    //print("Resource found in manifest: \(resource.path)")
                     self.currentChapterIndex = 0
                     self.currentChapterURL = contentBaseURL?.appendingPathComponent(resource.path)
                 } else {
-                     print("Resource NOT found in manifest, using idref as path: \(firstSpineItem.idref)")
+                     //print("Resource NOT found in manifest, using idref as path: \(firstSpineItem.idref)")
                      self.currentChapterIndex = 0
                      self.currentChapterURL = contentBaseURL?.appendingPathComponent(firstSpineItem.idref)
                 }
-                print("Final Chapter URL: \(self.currentChapterURL?.path ?? "N/A")")
+                //print("Final Chapter URL: \(self.currentChapterURL?.path ?? "N/A")")
             } else {
-                print("No spine items found in document.")
+                //print("No spine items found in document.")
                 errorMessage = "No chapters found in this book."
             }
             
         } catch {
-            print("Error loading book: \(error)")
+            //print("Error loading book: \(error)")
             errorMessage = "Failed to load book: \(error.localizedDescription)"
         }
         
+        // Pre-calculate page counts for all chapters to enable absolute page tracking
+        await preCalculateAllPageCounts()
+        
         isLoading = false
         
-        // Apply pending navigation if set (after book loads)
+        // Apply pending navigation if set (after book and page counts loaded)
         if let chapterIndex = pendingChapterIndex {
             currentChapterIndex = chapterIndex
             pendingChapterIndex = nil
-            print("DEBUG: Applied pending chapter navigation to \(chapterIndex)")
+            //print("DEBUG: Applied pending chapter navigation to \(chapterIndex)")
+        } else if let progress = book.progress {
+            // Restore reading progress using chapter-relative position (more reliable)
+            // Fallback to absolute page conversion if chapter-relative not available (old data)
+            if let savedChapter = progress.currentChapterIndex,
+               let savedSubPage = progress.currentSubPage {
+                //print("DEBUG: Restoring progress from chapter \(savedChapter), subPage \(savedSubPage)")
+                currentChapterIndex = savedChapter
+                pendingPageIndex = savedSubPage
+                //print("DEBUG: ✅ Restored to chapter \(savedChapter), pending page \(savedSubPage)")
+            } else {
+                // Fallback for old data without chapter-relative info
+                let absolutePage = progress.currentPage
+                //print("DEBUG: Restoring from absolute page (legacy): \(absolutePage)")
+                let (chapter, page) = chapterAndPage(from: absolutePage)
+                currentChapterIndex = chapter
+                pendingPageIndex = page
+                //print("DEBUG: ✅ Fallback restored to chapter \(chapter), pending page \(page)")
+            }
         }
-        if let pageIndex = pendingPageIndex {
-            currentSubPage = pageIndex
-            pendingPageIndex = nil
-            print("DEBUG: Applied pending page navigation to \(pageIndex)")
+    }
+    
+    // MARK: - Page Count Pre-Calculation
+    
+    /// Pre-calculate page counts for all chapters to enable absolute page tracking
+    private func preCalculateAllPageCounts() async {
+        guard let document = epubDocument, let baseURL = contentBaseURL else {
+            //print("DEBUG: Cannot pre-calculate - no document or baseURL")
+            return
         }
+        
+        //print("DEBUG: Pre-calculating page counts for \(document.spine.items.count) chapters...")
+        
+        for (index, spineItem) in document.spine.items.enumerated() {
+            // Find resource in manifest
+            if let resource = document.manifest.items.values.first(where: { $0.id == spineItem.idref }) {
+                let chapterURL = baseURL.appendingPathComponent(resource.path)
+                
+                // Read HTML content
+                if let htmlContent = try? String(contentsOf: chapterURL, encoding: .utf8) {
+                    // Estimate pages based on content length
+                    // Average: ~2000 chars per page (adjustable)
+                    let estimatedPages = max(1, htmlContent.count / 2000)
+                    chapterPageCounts[index] = estimatedPages
+                    
+                    //print("DEBUG: Chapter \(index) estimated: \(estimatedPages) pages (\(htmlContent.count) chars)")
+                } else {
+                    // Fallback: assume 1 page
+                    chapterPageCounts[index] = 1
+                    //print("DEBUG: Chapter \(index) fallback: 1 page (couldn't read content)")
+                }
+            } else {
+                chapterPageCounts[index] = 1
+                //print("DEBUG: Chapter \(index) fallback: 1 page (resource not found)")
+            }
+        }
+        
+        //print("DEBUG: Pre-calculation complete. Total estimated pages: \(totalAbsolutePages)")
+    }
+    
+    // MARK: - Absolute Page Conversion Helpers
+    
+    /// Convert absolute page number (1-indexed) to (chapterIndex, subPage)
+    private func chapterAndPage(from absolutePage: Int) -> (chapter: Int, page: Int) {
+        var remainingPages = absolutePage
+        
+        for chapterIdx in 0..<(epubDocument?.spine.items.count ?? 0) {
+            let pagesInChapter = chapterPageCounts[chapterIdx] ?? 1
+            
+            if remainingPages <= pagesInChapter {
+                // Found the chapter - convert to 0-indexed page
+                return (chapterIdx, remainingPages - 1)
+            }
+            
+            remainingPages -= pagesInChapter
+        }
+        
+        // Fallback: last chapter, last page
+        let lastChapter = max(0, (epubDocument?.spine.items.count ?? 1) - 1)
+        let lastPage = max(0, (chapterPageCounts[lastChapter] ?? 1) - 1)
+        return (lastChapter, lastPage)
     }
     
     private func findContentBaseURL(in root: URL) throws -> URL? {
@@ -195,43 +311,43 @@ public class ReaderViewModel: ObservableObject {
     // MARK: - Navigation
     
     public func nextPage() {
-        print("DEBUG: nextPage() invoked. Current State -> subPage: \(currentSubPage), totalSubPages: \(totalSubPages), chapter: \(currentChapterIndex)")
+        //print("DEBUG: nextPage() invoked. Current State -> subPage: \(currentSubPage), totalSubPages: \(totalSubPages), chapter: \(currentChapterIndex)")
         
         if currentSubPage < totalSubPages - 1 {
             currentSubPage += 1
-            print("DEBUG: Condition (current < total - 1) TRUE. Incrementing subPage to \(currentSubPage)")
+            //print("DEBUG: Condition (current < total - 1) TRUE. Incrementing subPage to \(currentSubPage)")
         } else {
-            print("DEBUG: Condition (current < total - 1) FALSE. SubPage is \(currentSubPage), Total is \(totalSubPages). Moving to next chapter logic.")
+            //print("DEBUG: Condition (current < total - 1) FALSE. SubPage is \(currentSubPage), Total is \(totalSubPages). Moving to next chapter logic.")
             // Next Chapter Logic
              if let document = epubDocument, currentChapterIndex < document.spine.items.count - 1 {
                 currentChapterIndex += 1
                 currentSubPage = 0
-                print("DEBUG: Moving to next chapter index: \(currentChapterIndex)")
+                //print("DEBUG: Moving to next chapter index: \(currentChapterIndex)")
             } else {
-                print("DEBUG: No more chapters available (current: \(currentChapterIndex), total: \(epubDocument?.spine.items.count ?? 0)).")
+                //print("DEBUG: No more chapters available (current: \(currentChapterIndex), total: \(epubDocument?.spine.items.count ?? 0)).")
             }
         }
     }
     
     public func previousPage() {
-        print("DEBUG: previousPage() called. currentSubPage: \(currentSubPage), totalSubPages: \(totalSubPages)")
+        //print("DEBUG: previousPage() called. currentSubPage: \(currentSubPage), totalSubPages: \(totalSubPages)")
         
         if currentSubPage > 0 {
             currentSubPage -= 1
-             print("DEBUG: Decrementing subPage to \(currentSubPage)")
+             //print("DEBUG: Decrementing subPage to \(currentSubPage)")
         } else {
              // Previous Chapter Logic
              if currentChapterIndex > 0 {
                 currentChapterIndex -= 1
                 currentSubPage = 0 // Should ideally go to last page of chapter
-                print("DEBUG: Moving to previous chapter: \(currentChapterIndex)")
+                //print("DEBUG: Moving to previous chapter: \(currentChapterIndex)")
             }
         }
     }
     
     public func spineIndex(for item: EPUBTableOfContents) -> (index: Int?, fragment: String?) {
         guard let document = epubDocument, let itemPath = item.item else { 
-            print("DEBUG: spineIndex - no item path for '\(item.label)'")
+            //print("DEBUG: spineIndex - no item path for '\(item.label)'")
             return (nil, nil)
         }
         
@@ -240,7 +356,7 @@ public class ReaderViewModel: ObservableObject {
         let tocPath = components.first ?? itemPath
         let fragment = components.count > 1 ? components.last : nil
         
-        print("DEBUG: spineIndex - looking for path '\(tocPath)' (fragment: \(fragment ?? "none"))")
+        //print("DEBUG: spineIndex - looking for path '\(tocPath)' (fragment: \(fragment ?? "none"))")
         
         // Iterate spine items to find matching path
         for (index, spineItem) in document.spine.items.enumerated() {
@@ -260,13 +376,13 @@ public class ReaderViewModel: ObservableObject {
                    manifestPath.hasSuffix(tocPath) ||
                    tocPath.hasSuffix(manifestPath) ||
                    manifestFilename == tocFilename {
-                    print("DEBUG: spineIndex - MATCHED at index \(index): '\(manifestPath)' ~ '\(tocPath)'")
+                    //print("DEBUG: spineIndex - MATCHED at index \(index): '\(manifestPath)' ~ '\(tocPath)'")
                     return (index, fragment)
                 }
             }
         }
         
-        print("DEBUG: spineIndex - NO MATCH found for '\(tocPath)'")
+        //print("DEBUG: spineIndex - NO MATCH found for '\(tocPath)'")
         return (nil, nil)
     }
 
@@ -293,7 +409,7 @@ public class ReaderViewModel: ObservableObject {
     
     public func jumpToChapter(index: Int, fragment: String?) {
         guard let document = epubDocument, index < document.spine.items.count else { return }
-        print("DEBUG: jumpToChapter - index: \(index), fragment: \(fragment ?? "nil")")
+        //print("DEBUG: jumpToChapter - index: \(index), fragment: \(fragment ?? "nil")")
         currentChapterIndex = index
         currentSubPage = 0
         
@@ -313,7 +429,7 @@ public class ReaderViewModel: ObservableObject {
         guard let document = epubDocument,
               let baseURL = contentBaseURL,
               currentChapterIndex < document.spine.items.count else {
-            print("DEBUG: Cannot update chapter URL - missing document, baseURL, or invalid index")
+            //print("DEBUG: Cannot update chapter URL - missing document, baseURL, or invalid index")
             return
         }
         
@@ -321,10 +437,10 @@ public class ReaderViewModel: ObservableObject {
         
         if let resource = document.manifest.items[spineItem.idref] {
             currentChapterURL = baseURL.appendingPathComponent(resource.path)
-            print("DEBUG: Updated chapter URL to: \(currentChapterURL?.lastPathComponent ?? "nil")")
+            //print("DEBUG: Updated chapter URL to: \(currentChapterURL?.lastPathComponent ?? "nil")")
         } else {
             currentChapterURL = baseURL.appendingPathComponent(spineItem.idref)
-            print("DEBUG: Using idref as chapter URL: \(currentChapterURL?.lastPathComponent ?? "nil")")
+            //print("DEBUG: Using idref as chapter URL: \(currentChapterURL?.lastPathComponent ?? "nil")")
         }
         
         // Reset pagination for new chapter
@@ -350,6 +466,57 @@ public class ReaderViewModel: ObservableObject {
     
     public func resetTimeTracking() {
         timeOnCurrentPage = 0
+    }
+    
+    
+    // MARK: - Reading Progress
+    
+    private func saveProgress() {
+        //print("DEBUG: saveProgress() called - currentSubPage: \(currentSubPage), currentChapter: \(currentChapterTitle ?? "nil")")
+        
+        // Create or update reading progress
+        if book.progress == nil {
+            //print("DEBUG: Creating new ReadingProgress")
+            let progress = ReadingProgress()
+            book.progress = progress
+            
+            // Insert into context if available
+            if let context = modelContext {
+                context.insert(progress)
+                //print("DEBUG: Inserted progress into context")
+            } else {
+                //print("DEBUG: WARNING - No modelContext available")
+            }
+        }
+        
+        guard let progress = book.progress else {
+            //print("DEBUG: ERROR - Failed to get progress object")
+            return
+        }
+        
+        // Save current position using both absolute and chapter-relative
+        progress.currentPage = absolutePageNumber  // Store absolute page (1-500)
+        progress.currentChapter = currentChapterTitle  // Keep for reference
+        progress.currentChapterIndex = currentChapterIndex  // Reliable spine index
+        progress.currentSubPage = currentSubPage  // Reliable sub-page within chapter
+        progress.lastReadDate = Date()
+        
+        //print("DEBUG: Saved - Absolute: \(absolutePageNumber), Ch: \(currentChapterIndex), SubPage: \(currentSubPage), Total: \(totalAbsolutePages)")
+        
+        // Calculate percent complete using absolute pages
+        if totalAbsolutePages > 0 {
+            progress.percentComplete = (Double(absolutePageNumber) / Double(totalAbsolutePages)) * 100
+        }
+        
+        // Try to save context
+        if let context = modelContext {
+            do {
+                try context.save()
+                //print("DEBUG: Successfully saved progress - Chapter: \(currentChapterTitle ?? "Unknown"), Page: \(currentSubPage), %: \(progress.percentComplete)")
+            } catch {
+                //print("DEBUG: ERROR saving context: \(error)")
+            }
+        }
     }
     
     // MARK: - Text Selection Management

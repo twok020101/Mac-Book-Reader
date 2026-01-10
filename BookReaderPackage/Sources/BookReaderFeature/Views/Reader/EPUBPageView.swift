@@ -85,9 +85,12 @@ struct EPUBWebView: NSViewRepresentable {
                 self.viewModel.pendingScrollToFragment = nil
             }
         } else {
-            // Same URL, just scroll to the page
-            print("DEBUG: updateNSView - scrolling to page \(currentSubPage)")
-            context.coordinator.scrollToPage(currentSubPage)
+            // Same URL - only scroll if page actually changed
+            if currentSubPage != context.coordinator.lastScrolledPage {
+                print("DEBUG: updateNSView - scrolling from page \(context.coordinator.lastScrolledPage) to \(currentSubPage)")
+                context.coordinator.scrollToPage(currentSubPage)
+                context.coordinator.lastScrolledPage = currentSubPage
+            }
         }
     }
     
@@ -103,6 +106,7 @@ struct EPUBWebView: NSViewRepresentable {
         
         private var frameObservation: NSKeyValueObservation?
         private var didInjectCSS = false
+        var lastScrolledPage: Int = -1  // Track last scrolled page
         
         init(parent: EPUBWebView) {
             self.parent = parent
@@ -122,6 +126,20 @@ struct EPUBWebView: NSViewRepresentable {
                     DispatchQueue.main.async {
                         self.parent.viewModel.totalSubPages = totalPages
                         print("DEBUG: Updated totalSubPages to \(totalPages)")
+                        
+                        // Apply pending page navigation NOW that we know totalSubPages
+                        if let pendingPage = self.parent.viewModel.pendingPageIndex {
+                            print("DEBUG: Applying pending page navigation to page \(pendingPage) (total: \(totalPages))")
+                            // Ensure page is within bounds
+                            let safePage = min(max(0, pendingPage), totalPages - 1)
+                            self.parent.viewModel.currentSubPage = safePage
+                            self.parent.viewModel.pendingPageIndex = nil
+                            
+                            // Scroll to the page and track it
+                            self.scrollToPage(safePage)
+                            self.lastScrolledPage = safePage
+                            print("DEBUG: Scrolled and set lastScrolledPage to \(safePage)")
+                        }
                     }
                 }
             } else if message.name == "textSelection" {
@@ -309,26 +327,67 @@ struct EPUBWebView: NSViewRepresentable {
                 return
             }
             
-            // Scroll to element by ID or name
+            // JavaScript to find element and calculate which page it's on
+            // Uses element position relative to wrapper since we use CSS transform pagination
             let js = """
             (function() {
-                var el = document.getElementById('\(fragment)') || document.querySelector('[name="\(fragment)"]');
-                if (el) {
-                    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                    console.log('Scrolled to fragment: \(fragment)');
-                    return true;
+                var element = document.getElementById('\(fragment)') || document.querySelector('[name="\(fragment)"]');
+                if (element) {
+                    var wrapper = document.getElementById('reader-wrapper');
+                    if (!wrapper) {
+                        console.log('Fragment scroll failed: no reader-wrapper');
+                        return { success: false, page: 0 };
+                    }
+                    
+                    var pageWidth = window.innerWidth;
+                    var wrapperRect = wrapper.getBoundingClientRect();
+                    var rect = element.getBoundingClientRect();
+                    
+                    // Calculate element's X position relative to wrapper's original position
+                    // wrapperRect.left accounts for any current transform, so we need to
+                    // calculate the "untransformed" position
+                    var currentTransform = wrapper.style.transform || '';
+                    var currentOffset = 0;
+                    var match = currentTransform.match(/translateX\\((-?\\d+)px\\)/);
+                    if (match) {
+                        currentOffset = parseInt(match[1]);
+                    }
+                    
+                    // Element's absolute X from document start
+                    var elementAbsoluteX = rect.left - wrapperRect.left - currentOffset;
+                    var currentPage = Math.max(0, Math.floor(elementAbsoluteX / pageWidth));
+                    
+                    console.log('Fragment: ' + '\(fragment)' + ' elementX: ' + elementAbsoluteX + ' page: ' + currentPage);
+                    
+                    // Scroll to that page using our transform-based pagination
+                    if (window.scrollToPage) {
+                        window.scrollToPage(currentPage);
+                    }
+                    
+                    return { success: true, page: currentPage };
                 } else {
                     console.log('Fragment not found: \(fragment)');
-                    return false;
+                    return { success: false, page: 0 };
                 }
             })();
             """
             
             webView.evaluateJavaScript(js) { result, error in
                 if let error = error {
-                    print("DEBUG: scrollToFragment error: \(error.localizedDescription)")
-                } else {
-                    print("DEBUG: scrollToFragment('\(fragment)') result: \(result ?? "nil")")
+                    print("DEBUG: scrollToFragment error: \\(error.localizedDescription)")
+                } else if let dict = result as? [String: Any],
+                          let success = dict["success"] as? Bool,
+                          let page = dict["page"] as? Int {
+                    print("DEBUG: scrollToFragment('\\(fragment)') - success: \\(success), page: \\(page)")
+                    
+                    if success {
+                        // Update currentSubPage to match the actual page the fragment is on
+                        DispatchQueue.main.async {
+                            self.parent.viewModel.currentSubPage = page
+                            self.lastScrolledPage = page
+                            print("DEBUG: Updated currentSubPage to \\(page) after fragment scroll")
+                        }
+                    }
                 }
             }
         }

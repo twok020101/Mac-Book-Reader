@@ -25,6 +25,7 @@ struct BookReaderWindow: View {
     let request: BookWindowRequest
     @Query private var allBooks: [Book]
     @State private var columnVisibility = NavigationSplitViewVisibility.all
+    @Environment(\.modelContext) private var modelContext
     
     var book: Book? {
         allBooks.first { $0.id == request.bookID }
@@ -35,6 +36,7 @@ struct BookReaderWindow: View {
             ReaderView(
                 book: book,
                 columnVisibility: $columnVisibility,
+                modelContext: modelContext,
                 initialChapterIndex: request.chapterIndex,
                 initialPageIndex: request.pageIndex
             )

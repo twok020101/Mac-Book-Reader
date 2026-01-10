@@ -3,26 +3,51 @@ import SwiftData
 import SwiftUI
 
 import PDFKit
+import UniformTypeIdentifiers // Added for UTType
 
 @MainActor
 public class LibraryViewModel: ObservableObject {
     @Published public var searchText = ""
     @Published public var selectedCollection: Collection?
     @Published public var isImporting = false
+    @Published public var duplicateAlert = false
+    @Published public var duplicateBookTitles: [String] = []
     
     public init() {}
     
     public func importBooks(urls: [URL], context: ModelContext) {
         Task { @MainActor in
+            var duplicates: [String] = []
+            var imported = 0
+            
+            // Fetch existing books to check for duplicates
+            let descriptor = FetchDescriptor<Book>()
+            let existingBooks = (try? context.fetch(descriptor)) ?? []
+            let existingPaths = Set(existingBooks.map { $0.filePath })
+            
             for url in urls {
-                guard url.startAccessingSecurityScopedResource() else { continue }
+                guard url.startAccessingSecurityScopedResource() else {
+                    print("Failed to access: \(url)")
+                    continue
+                }
                 defer { url.stopAccessingSecurityScopedResource() }
                 
                 let fileName = url.lastPathComponent
-                guard let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
-                let destURL = docsURL.appendingPathComponent(fileName)
+                
+                // Check for duplicate by file path
+                if existingPaths.contains(fileName) { // filePath is just the fileName
+                    // Extract title from existing book
+                    if let existingBook = existingBooks.first(where: { $0.filePath == fileName }) {
+                        duplicates.append(existingBook.title)
+                    }
+                    continue
+                }
                 
                 do {
+                    guard let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { continue }
+                    let destURL = docsURL.appendingPathComponent(fileName)
+                    
+                    // Copy file if not already there
                     if FileManager.default.fileExists(atPath: destURL.path) {
                         try? FileManager.default.removeItem(at: destURL)
                     }
@@ -54,11 +79,19 @@ public class LibraryViewModel: ObservableObject {
                     let newBook = Book(title: title, author: author, coverImageData: coverData, filePath: relativePath, fileType: fileType)
                     
                     context.insert(newBook)
-                    // context is main context, so safe
+                    imported += 1
                 } catch {
                     print("Error importing book: \(error)")
                 }
             }
+            
+            // Show alert if duplicates were found
+            if !duplicates.isEmpty {
+                duplicateBookTitles = duplicates
+                duplicateAlert = true
+            }
+            
+            print("Imported \(imported) books, skipped \(duplicates.count) duplicates")
         }
     }
 }

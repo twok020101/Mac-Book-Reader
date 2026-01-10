@@ -24,6 +24,7 @@ public struct LibraryView: View {
             // Books Tab
             NavigationStack {
                 BookGridView(books: filteredBooks, columnVisibility: $columnVisibility)
+                    .navigationTitle("Library")
                     .searchable(text: $viewModel.searchText, prompt: "Search books...")
                     .toolbar {
                         Button(action: { viewModel.isImporting = true }) {
@@ -34,6 +35,12 @@ public struct LibraryView: View {
                         ImportBookView(isPresented: $viewModel.isImporting) { urls in
                             viewModel.importBooks(urls: urls, context: modelContext)
                         }
+                    }
+                    .alert("Duplicate Books", isPresented: $viewModel.duplicateAlert) {
+                        Button("OK", role: .cancel) {}
+                    } message: {
+                        Text("The following books are already in your library and were skipped:\n\n" +
+                             viewModel.duplicateBookTitles.joined(separator: "\n"))
                     }
             }
             .tabItem {
