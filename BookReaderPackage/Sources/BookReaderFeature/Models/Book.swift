@@ -14,6 +14,7 @@ public final class Book {
     
     @Relationship(deleteRule: .cascade) public var progress: ReadingProgress?
     @Relationship(deleteRule: .cascade) public var notes: [Note]
+    @Relationship(deleteRule: .cascade) public var aiChatMessages: [AIChatMessage]
     @Relationship public var collection: Collection?
     public var tags: [String] = []
     
@@ -27,6 +28,7 @@ public final class Book {
         self.dateAdded = dateAdded
         self.tags = tags
         self.notes = []
+        self.aiChatMessages = []
     }
 }
 

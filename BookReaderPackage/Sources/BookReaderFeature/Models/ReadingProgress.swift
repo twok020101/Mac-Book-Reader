@@ -31,7 +31,7 @@ public final class ReadingProgress {
 public struct PageReadingRecord: Codable {
     public let pageIdentifier: String  // Page number or CFI
     public let totalSecondsSpent: Int
-    public var hasUnlockedAI: Bool { totalSecondsSpent >= 120 }
+    public var hasUnlockedAI: Bool { totalSecondsSpent >= 20 }
     
     public init(pageIdentifier: String, totalSecondsSpent: Int) {
         self.pageIdentifier = pageIdentifier

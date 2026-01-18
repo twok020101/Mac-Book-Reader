@@ -1,40 +1,29 @@
 import SwiftUI
 import SwiftData
 
-struct ChatMessage: Identifiable {
-    let id = UUID()
-    let role: MessageRole
-    let content: String
-    
-    enum MessageRole {
-        case user
-        case assistant
-        case system
-    }
-}
-
 public struct AIChatPanel: View {
+    @Bindable var book: Book
     @ObservedObject var viewModel: ReaderViewModel
     @ObservedObject var geminiService = GeminiService.shared
     
     @State private var apiKeyInput: String = ""
     @State private var chatInput: String = ""
-    @State private var messages: [ChatMessage] = []
     @State private var isThinking = false
+    @Environment(\.modelContext) private var modelContext
     
-    public init(viewModel: ReaderViewModel) {
+    public init(book: Book, viewModel: ReaderViewModel) {
+        self.book = book
         self.viewModel = viewModel
     }
     
     public var body: some View {
-        VStack {
+        VStack(spacing: 0) {
             if !geminiService.isConfigured {
                 setupView
             } else {
                 chatView
             }
         }
-        .frame(width: 320)
         .background(.regularMaterial)
     }
     
@@ -58,7 +47,17 @@ public struct AIChatPanel: View {
                 .padding(.horizontal)
             
             Button("Enable AI") {
-                geminiService.configure(apiKey: apiKeyInput)
+                Task {
+                    do {
+                        try await geminiService.configure(apiKey: apiKeyInput)
+                        apiKeyInput = "" // Clear input after success
+                    } catch {
+                        let errorMsg = AIChatMessage(role: .system, content: "Failed to save API key: \(error.localizedDescription)")
+                        book.aiChatMessages.append(errorMsg)
+                        modelContext.insert(errorMsg)
+                        try? modelContext.save()
+                    }
+                }
             }
             .buttonStyle(.borderedProminent)
             .disabled(apiKeyInput.isEmpty)
@@ -76,7 +75,11 @@ public struct AIChatPanel: View {
                 Text("Ask Document")
                     .font(.headline)
                 Spacer()
-                Button(action: { geminiService.clearKey() }) {
+                Button(action: { 
+                    Task {
+                        try? await geminiService.clearKey()
+                    }
+                }) {
                     Image(systemName: "gearshape")
                 }
                 .buttonStyle(.plain)
@@ -86,7 +89,7 @@ public struct AIChatPanel: View {
             
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    if messages.isEmpty {
+                    if book.aiChatMessages.isEmpty {
                         Text("Ask questions about this book or the current page.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -94,7 +97,7 @@ public struct AIChatPanel: View {
                             .frame(maxWidth: .infinity, alignment: .center)
                     }
                     
-                    ForEach(messages) { msg in
+                    ForEach(book.aiChatMessages.sorted(by: { $0.createdAt < $1.createdAt })) { msg in
                         chatBubble(msg)
                     }
                     
@@ -128,7 +131,7 @@ public struct AIChatPanel: View {
         }
     }
     
-    func chatBubble(_ msg: ChatMessage) -> some View {
+    func chatBubble(_ msg: AIChatMessage) -> some View {
         HStack {
             if msg.role == .user { Spacer() }
             
@@ -147,35 +150,111 @@ public struct AIChatPanel: View {
         let text = chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         
-        let isPageSpecific = text.lowercased().contains("this page") || text.lowercased().contains("curren page")
+        // Check if question is about current/future content
+        let isAboutCurrentPage = text.lowercased().contains("this page") || 
+                                 text.lowercased().contains("current page")
         
-        // Time Gate check
-        if isPageSpecific {
-            let timeOnPage = viewModel.timeOnCurrentPage
-            if timeOnPage < 120 { // 2 minutes
-                let remaining = Int(120 - timeOnPage)
-                messages.append(ChatMessage(role: .system, content: "🔒 Please read the page for \(remaining) more seconds before asking AI about it."))
+        // Time Gate check for current page
+        if isAboutCurrentPage {
+            let currentPageUnlocked = viewModel.hasUnlockedAI(for: viewModel.currentPageId)
+            
+            if !currentPageUnlocked {
+                let remaining = max(0, Int(20 - viewModel.timeOnCurrentPage))
+                let systemMsg = AIChatMessage(
+                    role: .system, 
+                    content: "🔒 Please read for \(remaining) more seconds to ask AI about this page.\n\n💡 You can ask about content from previous pages anytime!"
+                )
+                book.aiChatMessages.append(systemMsg)
+                modelContext.insert(systemMsg)
+                try? modelContext.save()
                 chatInput = ""
                 return
             }
         }
         
-        messages.append(ChatMessage(role: .user, content: text))
+        let userMsg = AIChatMessage(role: .user, content: text)
+        book.aiChatMessages.append(userMsg)
+        modelContext.insert(userMsg)
+        try? modelContext.save()
+        
         chatInput = ""
         isThinking = true
         
         Task {
             do {
-                // TODO: Inject context (book content or current page text)
-                // For now, simple prompt
-                let fullPrompt = "Context: You are a helpful book reading assistant. User is reading '\(viewModel.book.title)'.\n\nUser: \(text)"
+                // Build context from book and reading position
+                let context = buildContext(for: text)
+                
+                // Build conversation history for context continuity
+                let conversationHistory = buildConversationHistory()
+                
+                let fullPrompt = """
+                Context: You are a helpful book reading assistant.
+                Book: "\(viewModel.book.title)" by \(viewModel.book.author ?? "Unknown Author")
+                Current Chapter: \(viewModel.currentChapterTitle ?? "Unknown Chapter")
+                
+                Instructions: Provide helpful, concise answers about the book content. Be educational and encourage genuine study.
+                
+                \(context)
+                
+                \(conversationHistory)
+                
+                User Question: \(text)
+                """
                 
                 let response = try await geminiService.generateContent(prompt: fullPrompt)
-                messages.append(ChatMessage(role: .assistant, content: response))
+                
+                let assistantMsg = AIChatMessage(role: .assistant, content: response)
+                book.aiChatMessages.append(assistantMsg)
+                modelContext.insert(assistantMsg)
+                try? modelContext.save()
+            } catch let error as GeminiError {
+                let errorMsg = AIChatMessage(role: .system, content: "❌ \(error.localizedDescription)")
+                book.aiChatMessages.append(errorMsg)
+                modelContext.insert(errorMsg)
+                try? modelContext.save()
             } catch {
-                messages.append(ChatMessage(role: .system, content: "Error: \(error.localizedDescription)"))
+                let errorMsg = AIChatMessage(role: .system, content: "❌ Error: \(error.localizedDescription)")
+                book.aiChatMessages.append(errorMsg)
+                modelContext.insert(errorMsg)
+                try? modelContext.save()
             }
             isThinking = false
         }
+    }
+    
+    /// Build contextual information for AI prompt
+    private func buildContext(for question: String) -> String {
+        var context = ""
+        
+        // Add reading progress context
+        let progress = viewModel.book.progress
+        if let percentComplete = progress?.percentComplete {
+            context += "Reading Progress: \(Int(percentComplete))% complete\n"
+        }
+        
+        // Note: Full chapter content injection would require loading HTML
+        // For now, we provide metadata. Future enhancement could extract current page text.
+        
+        return context
+    }
+    
+    /// Build conversation history (last 5 exchanges for context)
+    private func buildConversationHistory() -> String {
+        // Only include actual user/assistant messages, not system messages
+        let conversationMessages = book.aiChatMessages.filter { $0.role == .user || $0.role == .assistant }
+        
+        // Take last 5 exchanges (10 messages: 5 user + 5 assistant)
+        let recentMessages = conversationMessages.sorted(by: { $0.createdAt < $1.createdAt }).suffix(10)
+        
+        guard !recentMessages.isEmpty else { return "" }
+        
+        var history = "Previous conversation:\n"
+        for msg in recentMessages {
+            let role = msg.role == .user ? "User" : "Assistant"
+            history += "\(role): \(msg.content)\n"
+        }
+        
+        return history
     }
 }

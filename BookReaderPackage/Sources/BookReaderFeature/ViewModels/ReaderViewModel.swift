@@ -20,6 +20,7 @@ public class ReaderViewModel: ObservableObject {
             //print("DEBUG: currentSubPage changed from \(oldValue) to \(currentSubPage)")
             if oldValue != currentSubPage {
                 saveProgress()
+                loadPageReadingTime() // Load accumulated time for this page
             }
         }
     }
@@ -313,6 +314,9 @@ public class ReaderViewModel: ObservableObject {
     public func nextPage() {
         //print("DEBUG: nextPage() invoked. Current State -> subPage: \(currentSubPage), totalSubPages: \(totalSubPages), chapter: \(currentChapterIndex)")
         
+        // Save current page time before navigating
+        resetTimeTracking()
+        
         if currentSubPage < totalSubPages - 1 {
             currentSubPage += 1
             //print("DEBUG: Condition (current < total - 1) TRUE. Incrementing subPage to \(currentSubPage)")
@@ -331,6 +335,9 @@ public class ReaderViewModel: ObservableObject {
     
     public func previousPage() {
         //print("DEBUG: previousPage() called. currentSubPage: \(currentSubPage), totalSubPages: \(totalSubPages)")
+        
+        // Save current page time before navigating
+        resetTimeTracking()
         
         if currentSubPage > 0 {
             currentSubPage -= 1
@@ -460,12 +467,88 @@ public class ReaderViewModel: ObservableObject {
     }
     
     public func stopTrackingTime() {
+        // Save accumulated time before stopping
+        if timeOnCurrentPage > 0 {
+            saveCurrentPageReadingTime()
+        }
         timeTrackingTimer?.invalidate()
         timeTrackingTimer = nil
     }
     
     public func resetTimeTracking() {
+        // Save time before reset
+        if timeOnCurrentPage > 0 {
+            saveCurrentPageReadingTime()
+        }
         timeOnCurrentPage = 0
+    }
+    
+    /// Save the current page's reading time to persistence
+    private func saveCurrentPageReadingTime() {
+        guard let progress = book.progress, timeOnCurrentPage > 0 else { return }
+        
+        let pageId = currentPageId
+        
+        if let index = progress.pageReadingTimes.firstIndex(where: { $0.pageIdentifier == pageId }) {
+            // Update existing record
+            let existing = progress.pageReadingTimes[index]
+            progress.pageReadingTimes[index] = PageReadingRecord(
+                pageIdentifier: pageId,
+                totalSecondsSpent: existing.totalSecondsSpent + Int(timeOnCurrentPage)
+            )
+        } else {
+            // Create new record
+            progress.pageReadingTimes.append(
+                PageReadingRecord(
+                    pageIdentifier: pageId,
+                    totalSecondsSpent: Int(timeOnCurrentPage)
+                )
+            )
+        }
+        
+        // Save to database
+        if let context = modelContext {
+            try? context.save()
+        }
+    }
+    
+    /// Get current page identifier
+    public var currentPageId: String {
+        "\(currentChapterIndex)-\(currentSubPage)"
+    }
+    
+    /// Check if AI is unlocked for a specific page
+    public func hasUnlockedAI(for pageId: String) -> Bool {
+        guard let progress = book.progress else { return false }
+        return progress.pageReadingTimes
+            .first(where: { $0.pageIdentifier == pageId })?
+            .hasUnlockedAI ?? false
+    }
+    
+    /// Check if a page has been read (for gating purposes)
+    public func hasReadPage(chapterIndex: Int, subPage: Int) -> Bool {
+        let pageId = "\(chapterIndex)-\(subPage)"
+        
+        // A page is "read" if it's before current position OR unlocked by time
+        let isBeforeCurrent = (chapterIndex < currentChapterIndex) ||
+                              (chapterIndex == currentChapterIndex && subPage < currentSubPage)
+        
+        return isBeforeCurrent || hasUnlockedAI(for: pageId)
+    }
+    
+    /// Load accumulated reading time for current page
+    private func loadPageReadingTime() {
+        guard let progress = book.progress else {
+            timeOnCurrentPage = 0
+            return
+        }
+        
+        let pageId = currentPageId
+        let existingTime = progress.pageReadingTimes
+            .first(where: { $0.pageIdentifier == pageId })?
+            .totalSecondsSpent ?? 0
+        
+        timeOnCurrentPage = TimeInterval(existingTime)
     }
     
     

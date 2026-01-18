@@ -54,8 +54,14 @@ public struct ReaderView: View {
             // Cmd+N (Toggle Notes)
             if modifiers.contains(.command) && !modifiers.contains(.shift) && event.keyCode == 45 { // N key
                 DispatchQueue.main.async {
-                    withAnimation { self.viewModel.showNotes.toggle() }
-                    if self.viewModel.showNotes { self.viewModel.showChapterList = false }
+                    withAnimation { 
+                        self.viewModel.showNotes.toggle()
+                        // Close AI chat when opening notes (replacement logic)
+                        if self.viewModel.showNotes {
+                            self.viewModel.showChapterList = false
+                            self.showAIChat = false
+                        }
+                    }
                 }
                 return nil
             }
@@ -63,7 +69,14 @@ public struct ReaderView: View {
             // Cmd+I (AI Chat)
             if modifiers.contains(.command) && !modifiers.contains(.shift) && event.keyCode == 34 { // I key
                 DispatchQueue.main.async {
-                    self.showAIChat.toggle()
+                    withAnimation {
+                        self.showAIChat.toggle()
+                        // Close notes when opening AI chat (replacement logic)
+                        if self.showAIChat {
+                            self.viewModel.showNotes = false
+                            self.viewModel.showChapterList = false
+                        }
+                    }
                 }
                 return nil
             }
@@ -102,9 +115,6 @@ public struct ReaderView: View {
                 FocusModeWelcomeView(isPresented: $showFocusModeWelcome) {
                     enterFocusMode()
                 }
-            }
-            .sheet(isPresented: $showAIChat) {
-                AIChatPanel(viewModel: viewModel)
             }
             .sheet(isPresented: $viewModel.showNotesListSheet) {
                 NavigationStack {
@@ -183,12 +193,18 @@ public struct ReaderView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             
-            // Notes Sidebar (accessible in focus mode for note-taking)
+            // Right Sidebar - Shows either Notes or AI Chat (replacement logic)
             if viewModel.showNotes {
                 Divider()
                 
                 NotesSidePanel(book: book, viewModel: viewModel)
                     .frame(width: 300)
+                    .transition(.move(edge: .trailing))
+            } else if showAIChat {
+                Divider()
+                
+                AIChatPanel(book: book, viewModel: viewModel)
+                    .frame(width: 380)
                     .transition(.move(edge: .trailing))
             }
         }
@@ -226,14 +242,29 @@ public struct ReaderView: View {
                 
                 // Top-right toolbar
                 ToolbarItemGroup(placement: .primaryAction) {
-                    Button(action: { showAIChat.toggle() }) {
+                    Button(action: { 
+                        withAnimation { 
+                            showAIChat.toggle()
+                            // Close notes when opening AI chat (replacement logic)
+                            if showAIChat {
+                                viewModel.showNotes = false
+                                viewModel.showChapterList = false
+                            }
+                        }
+                    }) {
                         Label("AI Chat", systemImage: "sparkles")
                     }
                     .help("Chat with AI about this book (Cmd+I)")
                     
                     Button(action: { 
-                        withAnimation { viewModel.showNotes.toggle() }
-                        if viewModel.showNotes { viewModel.showChapterList = false }
+                        withAnimation { 
+                            viewModel.showNotes.toggle()
+                            // Close AI chat when opening notes (replacement logic)
+                            if viewModel.showNotes {
+                                viewModel.showChapterList = false
+                                showAIChat = false
+                            }
+                        }
                     }) {
                         Label("Notes", systemImage: "square.and.pencil")
                     }

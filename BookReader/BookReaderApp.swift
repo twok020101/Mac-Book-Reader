@@ -4,17 +4,24 @@ import BookReaderFeature
 
 @main
 struct BookReaderApp: App {
+    init() {
+        // Initialize GeminiService to load API key from keychain
+        Task { @MainActor in
+            await GeminiService.shared.initialize()
+        }
+    }
+    
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .modelContainer(for: [Book.self, Collection.self, Note.self, ReadingProgress.self])
+                .modelContainer(for: [Book.self, Collection.self, Note.self, ReadingProgress.self, AIChatMessage.self])
         }
         
         // Window group for books - allows opening multiple books
         WindowGroup(for: BookWindowRequest.self) { $request in
             if let request = request {
                 BookReaderWindow(request: request)
-                    .modelContainer(for: [Book.self, Collection.self, Note.self, ReadingProgress.self])
+                    .modelContainer(for: [Book.self, Collection.self, Note.self, ReadingProgress.self, AIChatMessage.self])
             }
         }
     }

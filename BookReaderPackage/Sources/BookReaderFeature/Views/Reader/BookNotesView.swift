@@ -40,6 +40,13 @@ struct BookNotesView: View {
         }
         .searchable(text: $searchText, prompt: "Search notes...")
         .navigationTitle("\(book.title) - Notes")
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Done") {
+                    viewModel.showNotesListSheet = false
+                }
+            }
+        }
     }
     
     private func deleteNote(_ note: Note) {
